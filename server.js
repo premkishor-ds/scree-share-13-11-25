@@ -36,6 +36,10 @@ const upload = multer({ storage });
 app.use(express.static('public'));
 app.use('/recordings', express.static(recordingsDir));
 
+app.get('/quiz.html', (req, res) => {
+res.sendFile(path.join(__dirname, 'quiz.html'));
+});
+
 
 app.post('/api/recordings', upload.single('recording'), (req, res) => {
     if (!req.file) {
