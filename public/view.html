@@ -1,17 +1,21 @@
 <!doctype html>
 <html>
+
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Screen Viewer</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Screen Viewer</title>
 </head>
+
 <body>
-<h1>Screen Viewer</h1>
-<p id="info">Connecting...</p>
-<video id="remoteVideo" autoplay playsinline controls></video>
+    <h1>Screen Viewer</h1>
+    <p id="info">Connecting...</p>
+    <p id="recordingInfo"></p>
+    <video id="remoteVideo" autoplay playsinline controls></video>
 
 
-<script src="/socket.io/socket.io.js"></script>
-<script src="viewer.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="viewer.js"></script>
 </body>
+
 </html>
