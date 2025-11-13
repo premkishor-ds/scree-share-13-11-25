@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+const cors = require('cors');
 const multer = require('multer');
 const { randomUUID } = require('crypto');
 const { Server } = require('socket.io');
@@ -10,7 +11,12 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+    cors: {
+        origin: '*',
+        methods: ['GET', 'POST'],
+    },
+});
 
 
 const recordingsDir = path.join(__dirname, 'recordings');
@@ -33,11 +39,12 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 
+app.use(cors({ origin: '*' }));
 app.use(express.static('public'));
 app.use('/recordings', express.static(recordingsDir));
 
 app.get('/quiz.html', (req, res) => {
-res.sendFile(path.join(__dirname, 'quiz.html'));
+    res.sendFile(path.join(__dirname, 'quiz.html'));
 });
 
 
