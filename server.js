@@ -19,8 +19,7 @@ const io = new Server(server, {
 
 const recordingsDir = path.join(__dirname, 'recordings');
 const screenDir = path.join(recordingsDir, 'screen');
-const cameraDir = path.join(recordingsDir, 'camera');
-[recordingsDir, screenDir, cameraDir].forEach(dir => {
+[recordingsDir, screenDir].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
@@ -34,41 +33,19 @@ const screenStorage = multer.diskStorage({
     destination: screenDir,
     filename: (req, file, cb) => cb(null, commonFilename(file)),
 });
-const cameraStorage = multer.diskStorage({
-    destination: cameraDir,
-    filename: (req, file, cb) => cb(null, commonFilename(file)),
-});
 
 const uploadScreen = multer({ storage: screenStorage });
-const uploadCamera = multer({ storage: cameraStorage });
-const uploadAny = multer({ storage: screenStorage }); // backward compat default
 
 app.use(cors({ origin: '*' }));
 app.use(express.static('public'));
 app.use('/recordings', express.static(recordingsDir));
 app.use('/recordings/screen', express.static(screenDir));
-app.use('/recordings/camera', express.static(cameraDir));
-
-app.get('/quiz.html', (req, res) => {
-    res.sendFile(path.join(__dirname, 'quiz.html'));
-});
-
-app.post('/api/recordings', uploadAny.single('recording'), (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ error: 'No recording file received' });
-    }
-    res.json({ fileName: req.file.filename, fileUrl: `/recordings/screen/${req.file.filename}` });
-});
+// no camera static path; broadcaster is served from separate static frontend
 
 // Separate endpoints for screen and camera recordings
 app.post('/api/recordings/screen', uploadScreen.single('recording'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No recording file received' });
     res.json({ fileName: req.file.filename, fileUrl: `/recordings/screen/${req.file.filename}` });
-});
-
-app.post('/api/recordings/camera', uploadCamera.single('recording'), (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'No recording file received' });
-    res.json({ fileName: req.file.filename, fileUrl: `/recordings/camera/${req.file.filename}` });
 });
 
 // Simple signaling: broadcaster announces itself, watchers ask to view
