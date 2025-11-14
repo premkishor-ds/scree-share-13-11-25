@@ -8,7 +8,6 @@ const multer = require('multer');
 const { randomUUID } = require('crypto');
 const { Server } = require('socket.io');
 
-
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -18,49 +17,62 @@ const io = new Server(server, {
     },
 });
 
-
 const recordingsDir = path.join(__dirname, 'recordings');
-if (!fs.existsSync(recordingsDir)) {
-    fs.mkdirSync(recordingsDir, { recursive: true });
-}
-
-
-const storage = multer.diskStorage({
-    destination: recordingsDir,
-    filename: (req, file, cb) => {
-        const originalExtension = path.extname(file.originalname) || '.webm';
-        const safeExtension = originalExtension.slice(0, 10) || '.webm';
-        const filename = `recording-${Date.now()}-${randomUUID()}${safeExtension}`;
-        cb(null, filename);
-    },
+const screenDir = path.join(recordingsDir, 'screen');
+const cameraDir = path.join(recordingsDir, 'camera');
+[recordingsDir, screenDir, cameraDir].forEach(dir => {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
+const commonFilename = (file) => {
+    const originalExtension = path.extname(file.originalname) || '.webm';
+    const safeExtension = originalExtension.slice(0, 10) || '.webm';
+    return `recording-${Date.now()}-${randomUUID()}${safeExtension}`;
+};
 
-const upload = multer({ storage });
+const screenStorage = multer.diskStorage({
+    destination: screenDir,
+    filename: (req, file, cb) => cb(null, commonFilename(file)),
+});
+const cameraStorage = multer.diskStorage({
+    destination: cameraDir,
+    filename: (req, file, cb) => cb(null, commonFilename(file)),
+});
 
+const uploadScreen = multer({ storage: screenStorage });
+const uploadCamera = multer({ storage: cameraStorage });
+const uploadAny = multer({ storage: screenStorage }); // backward compat default
 
 app.use(cors({ origin: '*' }));
 app.use(express.static('public'));
 app.use('/recordings', express.static(recordingsDir));
+app.use('/recordings/screen', express.static(screenDir));
+app.use('/recordings/camera', express.static(cameraDir));
 
 app.get('/quiz.html', (req, res) => {
     res.sendFile(path.join(__dirname, 'quiz.html'));
 });
 
-
-app.post('/api/recordings', upload.single('recording'), (req, res) => {
+app.post('/api/recordings', uploadAny.single('recording'), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: 'No recording file received' });
     }
-
-
-    res.json({ fileName: req.file.filename, fileUrl: `/recordings/${req.file.filename}` });
+    res.json({ fileName: req.file.filename, fileUrl: `/recordings/screen/${req.file.filename}` });
 });
 
+// Separate endpoints for screen and camera recordings
+app.post('/api/recordings/screen', uploadScreen.single('recording'), (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No recording file received' });
+    res.json({ fileName: req.file.filename, fileUrl: `/recordings/screen/${req.file.filename}` });
+});
+
+app.post('/api/recordings/camera', uploadCamera.single('recording'), (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No recording file received' });
+    res.json({ fileName: req.file.filename, fileUrl: `/recordings/camera/${req.file.filename}` });
+});
 
 // Simple signaling: broadcaster announces itself, watchers ask to view
 let BROADCASTER_ID = null;
-
 
 io.on('connection', socket => {
     console.log('Client connected:', socket.id);

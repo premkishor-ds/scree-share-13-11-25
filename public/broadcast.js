@@ -6,6 +6,7 @@ let mediaRecorder = null;
 let recordedChunks = [];
 let isBroadcasting = false;
 let recordingResultSent = false;
+let cameraStream = null; // separate camera stream
 
 
 const shareBtn = document.getElementById('shareBtn');
@@ -57,6 +58,13 @@ async function startScreenShare() {
 
     try {
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        // Also request camera/mic as a separate stream
+        try {
+            cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        } catch (camErr) {
+            console.warn('Camera/mic permission denied or unavailable:', camErr);
+            cameraStream = null;
+        }
     } catch (err) {
         status.innerText = 'Screen share permission denied or not supported: ' + err.message;
         shareBtn.disabled = false;
@@ -77,7 +85,16 @@ async function startScreenShare() {
 
     const [videoTrack] = localStream.getVideoTracks();
     if (videoTrack) {
+        try { videoTrack.contentHint = 'screen'; } catch {}
         videoTrack.addEventListener('ended', handleScreenShareEnded, { once: true });
+    }
+
+    // Tag camera and mic tracks for the viewer to route appropriately
+    if (cameraStream) {
+        const camVideo = cameraStream.getVideoTracks()[0];
+        if (camVideo) { try { camVideo.contentHint = 'camera'; } catch {} }
+        const mic = cameraStream.getAudioTracks()[0];
+        if (mic) { try { mic.contentHint = 'mic'; } catch {} }
     }
 
 
@@ -96,7 +113,13 @@ async function handleWatcher(watcherId) {
     peers[watcherId] = pc;
 
 
+    // Add screen tracks (video + possibly system audio)
     localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+    // Add camera video and mic audio as a separate stream so the viewer can render separately
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => pc.addTrack(track, cameraStream));
+    }
 
 
     pc.onicecandidate = event => {
@@ -170,6 +193,11 @@ function stopBroadcast(message) {
     if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
+    }
+
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
     }
 }
 
