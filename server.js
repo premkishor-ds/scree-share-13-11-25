@@ -5,7 +5,6 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const multer = require('multer');
-const { randomUUID } = require('crypto');
 const { Server } = require('socket.io');
 
 const app = express();
@@ -23,21 +22,27 @@ const screenDir = path.join(recordingsDir, 'screen');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-const commonFilename = (file) => {
+const commonFilename = (file, req) => {
     const originalExtension = path.extname(file.originalname) || '.webm';
     const safeExtension = originalExtension.slice(0, 10) || '.webm';
-    return `recording-${Date.now()}-${randomUUID()}${safeExtension}`;
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const rawUsername = req && req.body && req.body.username ? String(req.body.username) : '';
+    const safeUsername = rawUsername.toLowerCase().replace(/[^a-z0-9-_]/g, '') || 'user';
+    return `recording-${safeUsername}-${timestamp}${safeExtension}`;
 };
 
 const screenStorage = multer.diskStorage({
     destination: screenDir,
-    filename: (req, file, cb) => cb(null, commonFilename(file)),
+    filename: (req, file, cb) => cb(null, commonFilename(file, req)),
 });
 
 const uploadScreen = multer({ storage: screenStorage });
 
 app.use(cors({ origin: '*' }));
 app.use(express.static('public'));
+app.get('/view/:username.html', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'view.html'));
+});
 app.use('/recordings', express.static(recordingsDir));
 app.use('/recordings/screen', express.static(screenDir));
 // no camera static path; broadcaster is served from separate static frontend
