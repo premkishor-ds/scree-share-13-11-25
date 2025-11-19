@@ -119,7 +119,14 @@ socket.on('recording-ready', (payload) => {
 
 // Fallback: if autoplay was blocked, allow user to click anywhere to start playback muted
 document.addEventListener('click', () => {
-    if (video && video.srcObject && video.paused) {
+    const tryPlay = () => {
+        if (!video) return;
+        if (!video.srcObject) return;
+        if (!video.paused) return;
         try { video.muted = true; video.play().catch(()=>{}); } catch {}
-    }
+    };
+    // try immediately
+    tryPlay();
+    // and once more shortly after, in case stream arrives a bit later
+    setTimeout(tryPlay, 500);
 }, { once: true });
