@@ -54,36 +54,62 @@ app.post('/api/recordings/screen', uploadScreen.single('recording'), (req, res) 
 });
 
 // Simple signaling: broadcaster announces itself, watchers ask to view
+// Track both the broadcaster socket id and the logical username of the
+// broadcaster so that /view/<username>.html only sees the correct stream.
 let BROADCASTER_ID = null;
+let BROADCASTER_USERNAME = null;
 
 io.on('connection', socket => {
     console.log('Client connected:', socket.id);
 
 
-    socket.on('broadcaster', () => {
+    socket.on('broadcaster', (payload) => {
+        const username = payload && typeof payload.username === 'string'
+            ? payload.username.trim()
+            : '';
+
         BROADCASTER_ID = socket.id;
-        console.log('Broadcaster is:', BROADCASTER_ID);
-        socket.broadcast.emit('broadcaster');
+        BROADCASTER_USERNAME = username || null;
+
+        console.log('Broadcaster is:', BROADCASTER_ID, 'username:', BROADCASTER_USERNAME);
+
+        // Notify viewers that a broadcaster is available, including username
+        socket.broadcast.emit('broadcaster', { username: BROADCASTER_USERNAME });
     });
 
 
     socket.on('stop-broadcast', () => {
         if (socket.id === BROADCASTER_ID) {
             BROADCASTER_ID = null;
+            BROADCASTER_USERNAME = null;
             socket.broadcast.emit('broadcaster-stopped');
             console.log('Broadcaster stopped via stop-broadcast event');
         }
     });
 
 
-    socket.on('watcher', () => {
-        if (BROADCASTER_ID) {
-            console.log('Watcher', socket.id, ' -> notify broadcaster', BROADCASTER_ID);
-            socket.to(BROADCASTER_ID).emit('watcher', socket.id);
-        } else {
+    socket.on('watcher', (payload) => {
+        const requestedUsername = payload && typeof payload.username === 'string'
+            ? payload.username.trim()
+            : '';
+
+        if (!BROADCASTER_ID) {
             console.log('No broadcaster available for watcher', socket.id);
             socket.emit('no-broadcaster');
+            return;
         }
+
+        // If we have an associated broadcaster username, enforce that only
+        // viewers for that username can connect to the live stream.
+        if (!BROADCASTER_USERNAME || !requestedUsername || requestedUsername !== BROADCASTER_USERNAME) {
+            console.log('Watcher', socket.id, 'requested username', requestedUsername,
+                'but active broadcaster username is', BROADCASTER_USERNAME, '- denying');
+            socket.emit('no-broadcaster');
+            return;
+        }
+
+        console.log('Watcher', socket.id, '-> notify broadcaster', BROADCASTER_ID, 'for username', requestedUsername);
+        socket.to(BROADCASTER_ID).emit('watcher', socket.id);
     });
 
 
@@ -108,8 +134,12 @@ io.on('connection', socket => {
 
     socket.on('recording-ready', payload => {
         if (socket.id === BROADCASTER_ID) {
-            socket.broadcast.emit('recording-ready', payload);
-            console.log('Notified viewers about recording:', payload);
+            const enriched = {
+                ...(payload || {}),
+                username: BROADCASTER_USERNAME || null,
+            };
+            socket.broadcast.emit('recording-ready', enriched);
+            console.log('Notified viewers about recording:', enriched);
         }
     });
 
@@ -118,6 +148,7 @@ io.on('connection', socket => {
         console.log('Client disconnected:', socket.id);
         if (socket.id === BROADCASTER_ID) {
             BROADCASTER_ID = null;
+            BROADCASTER_USERNAME = null;
             socket.broadcast.emit('broadcaster-stopped');
             console.log('Broadcaster stopped');
         } else if (BROADCASTER_ID) {

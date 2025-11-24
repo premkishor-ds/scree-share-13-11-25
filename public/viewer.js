@@ -3,27 +3,48 @@ const socket = io();
 const video = document.getElementById('remoteVideo');
 const info = document.getElementById('info');
 const recordingInfo = document.getElementById('recordingInfo');
+
+// Derive the intended username from the /view/<username>.html path so the
+// backend can enforce that only that viewer URL receives the live stream.
+function getPageUsername() {
+    try {
+        const m = window.location.pathname.match(/\/view\/([^/.]+)\.html/i);
+        if (!m || !m[1]) return '';
+        return decodeURIComponent(m[1]).trim();
+    } catch {
+        return '';
+    }
+}
+
+const PAGE_USERNAME = getPageUsername();
+
 let pc = null;
 // camera overlay removed from view.html; we ignore camera tracks now
 let screenMedia = null;
 let cameraMedia = null;
 
-
 socket.on('connect', () => {
-    socket.emit('watcher');
+    // Ask to watch the broadcaster for this specific username (if any).
+    if (PAGE_USERNAME) {
+        socket.emit('watcher', { username: PAGE_USERNAME });
+    } else {
+        socket.emit('watcher', { username: '' });
+    }
+    info.innerText = 'Connecting to broadcaster...';
     recordingInfo.textContent = '';
 });
-
 
 socket.on('no-broadcaster', () => {
-    info.innerText = 'No broadcaster is currently streaming.';
+    if (PAGE_USERNAME) {
+        info.innerText = `No live session is currently available for "${PAGE_USERNAME}".`;
+    } else {
+        info.innerText = 'No broadcaster is currently streaming.';
+    }
     recordingInfo.textContent = '';
 });
-
 
 socket.on('offer', async (broadcasterId, description) => {
     pc = new RTCPeerConnection();
-
 
     pc.ontrack = event => {
         const track = event.track;
@@ -69,13 +90,11 @@ socket.on('offer', async (broadcasterId, description) => {
         }
     };
 
-
     pc.onicecandidate = event => {
         if (event.candidate) {
             socket.emit('candidate', broadcasterId, event.candidate);
         }
     };
-
 
     await pc.setRemoteDescription(description);
     const answer = await pc.createAnswer();
@@ -85,11 +104,9 @@ socket.on('offer', async (broadcasterId, description) => {
     recordingInfo.textContent = '';
 });
 
-
 socket.on('candidate', (id, candidate) => {
     if (pc) pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
 });
-
 
 socket.on('broadcaster-stopped', () => {
     info.innerText = 'Broadcast stopped by broadcaster.';
@@ -102,7 +119,6 @@ socket.on('broadcaster-stopped', () => {
     cameraMedia = null;
     // no camera overlay to clean up
 });
-
 
 socket.on('recording-ready', (payload) => {
     info.innerText = 'Broadcast finished.';
