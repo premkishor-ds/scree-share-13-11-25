@@ -37,6 +37,10 @@ const screenStorage = multer.diskStorage({
 });
 
 const uploadScreen = multer({ storage: screenStorage });
+const chunkMemoryStorage = multer.memoryStorage();
+const uploadScreenChunk = multer({ storage: chunkMemoryStorage });
+
+const chunkSessions = new Map();
 
 app.use(cors({ origin: '*' }));
 app.use(express.static('public'));
@@ -51,6 +55,44 @@ app.use('/recordings/screen', express.static(screenDir));
 app.post('/api/recordings/screen', uploadScreen.single('recording'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No recording file received' });
     res.json({ fileName: req.file.filename, fileUrl: `/recordings/screen/${req.file.filename}` });
+});
+
+app.post('/api/recordings/screen/chunk', uploadScreenChunk.single('recording'), (req, res) => {
+    try {
+        const { uploadId, index, isLast } = req.body || {};
+        if (!uploadId) {
+            return res.status(400).json({ error: 'Missing uploadId' });
+        }
+        if (!req.file || !req.file.buffer || !req.file.buffer.length) {
+            return res.status(400).json({ error: 'No recording chunk received' });
+        }
+
+        let session = chunkSessions.get(uploadId);
+        if (!session) {
+            const rawUsername = req.body && req.body.username ? String(req.body.username) : '';
+            const safeUsername = rawUsername.toLowerCase().replace(/[^a-z0-9-_]/g, '') || 'user';
+            const extension = path.extname(req.file.originalname) || '.webm';
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const baseName = `recording-${safeUsername}-${timestamp}${extension}`;
+            const filePath = path.join(screenDir, baseName);
+            fs.writeFileSync(filePath, req.file.buffer);
+            session = { filePath, fileName: baseName };
+            chunkSessions.set(uploadId, session);
+        } else {
+            fs.appendFileSync(session.filePath, req.file.buffer);
+        }
+
+        const last = String(isLast).toLowerCase() === 'true' || String(isLast) === '1';
+        if (last) {
+            chunkSessions.delete(uploadId);
+            return res.json({ fileName: session.fileName, fileUrl: `/recordings/screen/${session.fileName}` });
+        }
+
+        return res.json({ ok: true, uploadId, index: typeof index !== 'undefined' ? Number(index) : null });
+    } catch (err) {
+        console.error('Error handling screen chunk upload:', err);
+        return res.status(500).json({ error: 'Failed to process recording chunk' });
+    }
 });
 
 // Simple signaling: broadcaster announces itself, watchers ask to view
