@@ -5,7 +5,8 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const multer = require('multer');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
+const crypto = require('crypto');
 const { Server } = require('socket.io');
 
 const app = express();
@@ -23,32 +24,104 @@ const screenDir = path.join(recordingsDir, 'screen');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-function convertToMp4(inputPath, outputDir) {
-    return new Promise((resolve, reject) => {
-        try {
-            const parsed = path.parse(inputPath);
-            const baseName = parsed.name + '.mp4';
-            const outputPath = path.join(outputDir, baseName);
+function createJobId() {
+    try {
+        return crypto.randomUUID();
+    } catch {
+        return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+}
 
-            if (fs.existsSync(outputPath)) {
-                return resolve({ fileName: baseName, filePath: outputPath });
-            }
+function startConversionJob(jobId, inputPath, outputDir, webmUrl) {
+    const parsed = path.parse(inputPath);
+    const mp4Name = parsed.name + '.mp4';
+    const mp4Path = path.join(outputDir, mp4Name);
+    const mp4Url = `/recordings/screen/${mp4Name}`;
 
-            const cmd = `ffmpeg -y -i "${inputPath}" -c:v libx264 -preset veryfast -crf 23 -c:a aac -movflags +faststart "${outputPath}"`;
+    const job = {
+        jobId,
+        status: 'processing',
+        progress: 0,
+        webmUrl,
+        mp4Url: null,
+        error: null,
+    };
+    conversionJobs.set(jobId, job);
 
-            exec(cmd, (error) => {
-                if (error) {
-                    console.error('Error converting to mp4:', error);
-                    return reject(error);
-                }
-                resolve({ fileName: baseName, filePath: outputPath });
-            });
-        } catch (err) {
-            console.error('Unexpected error during mp4 conversion:', err);
-            reject(err);
+    const ffprobeCmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputPath}"`;
+
+    exec(ffprobeCmd, (probeErr, stdout) => {
+        let duration = 0;
+        if (!probeErr) {
+            const d = parseFloat(String(stdout).trim());
+            if (!Number.isNaN(d) && d > 0) duration = d;
         }
+
+        const args = [
+            '-y',
+            '-i', inputPath,
+            '-c:v', 'libx264',
+            '-preset', 'veryfast',
+            '-crf', '23',
+            '-c:a', 'aac',
+            '-movflags', '+faststart',
+            '-progress', 'pipe:1',
+            '-nostats',
+            mp4Path,
+        ];
+
+        const ff = spawn('ffmpeg', args);
+
+        ff.stdout.on('data', (data) => {
+            try {
+                const lines = String(data).split(/\r?\n/);
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed.startsWith('out_time_ms=')) continue;
+                    const val = trimmed.split('=')[1];
+                    const ms = parseFloat(val) || 0;
+                    const seconds = ms / 1_000_000;
+                    if (duration > 0) {
+                        const pct = Math.max(0, Math.min(100, Math.round((seconds / duration) * 100)));
+                        const current = conversionJobs.get(jobId);
+                        if (current && current.status === 'processing') {
+                            current.progress = pct;
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error('Error parsing ffmpeg progress:', err);
+            }
+        });
+
+        ff.stderr.on('data', () => {
+            // ignore noisy stderr; progress comes from stdout
+        });
+
+        ff.on('close', (code) => {
+            const current = conversionJobs.get(jobId);
+            if (!current) return;
+
+            if (code === 0) {
+                current.status = 'done';
+                current.progress = 100;
+                current.mp4Url = mp4Url;
+                try {
+                    if (fs.existsSync(inputPath)) {
+                        fs.unlinkSync(inputPath);
+                    }
+                } catch (err) {
+                    console.error('Failed to delete original webm after conversion:', err);
+                }
+            } else {
+                current.status = 'failed';
+                current.error = `ffmpeg exited with code ${code}`;
+            }
+        });
     });
 }
+
+const conversionJobs = new Map();
 
 const commonFilename = (file, req) => {
     const originalExtension = path.extname(file.originalname) || '.webm';
@@ -75,38 +148,76 @@ app.use(express.static('public'));
 app.get('/view/:username.html', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'view.html'));
 });
+app.get('/recordings/screen/:fileName', (req, res, next) => {
+    try {
+        const fileName = String(req.params.fileName || '');
+        if (!fileName.toLowerCase().endsWith('.webm')) return next();
+
+        const mp4Name = fileName.replace(/\.webm$/i, '.mp4');
+        const mp4Path = path.join(screenDir, mp4Name);
+        const mp4Url = `/recordings/screen/${mp4Name}`;
+
+        let isDone = false;
+        for (const job of conversionJobs.values()) {
+            if (job && job.mp4Url === mp4Url && job.status === 'done') {
+                isDone = true;
+                break;
+            }
+        }
+
+        if (isDone && fs.existsSync(mp4Path)) {
+            return res.redirect(mp4Url);
+        }
+        return next();
+    } catch {
+        return next();
+    }
+});
 app.use('/recordings', express.static(recordingsDir));
 app.use('/recordings/screen', express.static(screenDir));
 // no camera static path; broadcaster is served from separate static frontend
 
+app.get('/api/conversion-status/:jobId', (req, res) => {
+    const { jobId } = req.params || {};
+    if (!jobId) return res.status(400).json({ error: 'Missing jobId' });
+
+    const job = conversionJobs.get(jobId);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+
+    return res.json({
+        jobId: job.jobId,
+        status: job.status,
+        progress: job.progress,
+        webmUrl: job.webmUrl,
+        mp4Url: job.mp4Url,
+        error: job.error,
+    });
+});
+
 // Separate endpoints for screen and camera recordings
-app.post('/api/recordings/screen', uploadScreen.single('recording'), async (req, res) => {
+app.post('/api/recordings/screen', uploadScreen.single('recording'), (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: 'No recording file received' });
 
         const storedPath = req.file.path || path.join(screenDir, req.file.filename);
-        let mp4Info = null;
-        try {
-            mp4Info = await convertToMp4(storedPath, screenDir);
-        } catch (err) {
-            return res.json({
-                fileName: req.file.filename,
-                fileUrl: `/recordings/screen/${req.file.filename}`,
-                note: 'mp4 conversion failed; serving original file',
-            });
-        }
+        const webmUrl = `/recordings/screen/${req.file.filename}`;
+        const jobId = createJobId();
+
+        startConversionJob(jobId, storedPath, screenDir, webmUrl);
 
         return res.json({
-            fileName: mp4Info.fileName,
-            fileUrl: `/recordings/screen/${mp4Info.fileName}`,
+            jobId,
+            status: 'processing',
+            fileName: req.file.filename,
+            fileUrl: webmUrl,
         });
     } catch (err) {
-        console.error('Error handling screen upload with mp4 conversion:', err);
+        console.error('Error handling screen upload with async mp4 conversion:', err);
         return res.status(500).json({ error: 'Failed to process recording' });
     }
 });
 
-app.post('/api/recordings/screen/chunk', uploadScreenChunk.single('recording'), async (req, res) => {
+app.post('/api/recordings/screen/chunk', uploadScreenChunk.single('recording'), (req, res) => {
     try {
         const { uploadId, index, isLast } = req.body || {};
         if (!uploadId) {
@@ -120,6 +231,7 @@ app.post('/api/recordings/screen/chunk', uploadScreenChunk.single('recording'), 
         if (!session) {
             const rawUsername = req.body && req.body.username ? String(req.body.username) : '';
             const safeUsername = rawUsername.toLowerCase().replace(/[^a-z0-9-_]/g, '') || 'user';
+
             const extension = path.extname(req.file.originalname) || '.webm';
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const baseName = `recording-${safeUsername}-${timestamp}${extension}`;
@@ -135,20 +247,17 @@ app.post('/api/recordings/screen/chunk', uploadScreenChunk.single('recording'), 
         if (last) {
             chunkSessions.delete(uploadId);
 
-            try {
-                const mp4Info = await convertToMp4(session.filePath, screenDir);
-                return res.json({
-                    fileName: mp4Info.fileName,
-                    fileUrl: `/recordings/screen/${mp4Info.fileName}`,
-                });
-            } catch (err) {
-                console.error('Failed to convert chunked recording to mp4:', err);
-                return res.json({
-                    fileName: session.fileName,
-                    fileUrl: `/recordings/screen/${session.fileName}`,
-                    note: 'mp4 conversion failed; serving original file',
-                });
-            }
+            const webmUrl = `/recordings/screen/${session.fileName}`;
+            const jobId = createJobId();
+
+            startConversionJob(jobId, session.filePath, screenDir, webmUrl);
+
+            return res.json({
+                jobId,
+                status: 'processing',
+                fileName: session.fileName,
+                fileUrl: webmUrl,
+            });
         }
 
         return res.json({ ok: true, uploadId, index: typeof index !== 'undefined' ? Number(index) : null });
