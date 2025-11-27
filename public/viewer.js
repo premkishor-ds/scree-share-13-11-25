@@ -44,6 +44,7 @@ socket.on('no-broadcaster', () => {
 });
 
 socket.on('offer', async (broadcasterId, description) => {
+    pc = new RTCPeerConnection();
 
     pc.ontrack = event => {
         const track = event.track;
