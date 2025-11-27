@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const multer = require('multer');
+const { exec } = require('child_process');
 const { Server } = require('socket.io');
 
 const app = express();
@@ -21,6 +22,33 @@ const screenDir = path.join(recordingsDir, 'screen');
 [recordingsDir, screenDir].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
+
+function convertToMp4(inputPath, outputDir) {
+    return new Promise((resolve, reject) => {
+        try {
+            const parsed = path.parse(inputPath);
+            const baseName = parsed.name + '.mp4';
+            const outputPath = path.join(outputDir, baseName);
+
+            if (fs.existsSync(outputPath)) {
+                return resolve({ fileName: baseName, filePath: outputPath });
+            }
+
+            const cmd = `ffmpeg -y -i "${inputPath}" -c:v libx264 -preset veryfast -crf 23 -c:a aac -movflags +faststart "${outputPath}"`;
+
+            exec(cmd, (error) => {
+                if (error) {
+                    console.error('Error converting to mp4:', error);
+                    return reject(error);
+                }
+                resolve({ fileName: baseName, filePath: outputPath });
+            });
+        } catch (err) {
+            console.error('Unexpected error during mp4 conversion:', err);
+            reject(err);
+        }
+    });
+}
 
 const commonFilename = (file, req) => {
     const originalExtension = path.extname(file.originalname) || '.webm';
@@ -52,12 +80,33 @@ app.use('/recordings/screen', express.static(screenDir));
 // no camera static path; broadcaster is served from separate static frontend
 
 // Separate endpoints for screen and camera recordings
-app.post('/api/recordings/screen', uploadScreen.single('recording'), (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'No recording file received' });
-    res.json({ fileName: req.file.filename, fileUrl: `/recordings/screen/${req.file.filename}` });
+app.post('/api/recordings/screen', uploadScreen.single('recording'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No recording file received' });
+
+        const storedPath = req.file.path || path.join(screenDir, req.file.filename);
+        let mp4Info = null;
+        try {
+            mp4Info = await convertToMp4(storedPath, screenDir);
+        } catch (err) {
+            return res.json({
+                fileName: req.file.filename,
+                fileUrl: `/recordings/screen/${req.file.filename}`,
+                note: 'mp4 conversion failed; serving original file',
+            });
+        }
+
+        return res.json({
+            fileName: mp4Info.fileName,
+            fileUrl: `/recordings/screen/${mp4Info.fileName}`,
+        });
+    } catch (err) {
+        console.error('Error handling screen upload with mp4 conversion:', err);
+        return res.status(500).json({ error: 'Failed to process recording' });
+    }
 });
 
-app.post('/api/recordings/screen/chunk', uploadScreenChunk.single('recording'), (req, res) => {
+app.post('/api/recordings/screen/chunk', uploadScreenChunk.single('recording'), async (req, res) => {
     try {
         const { uploadId, index, isLast } = req.body || {};
         if (!uploadId) {
@@ -85,7 +134,21 @@ app.post('/api/recordings/screen/chunk', uploadScreenChunk.single('recording'), 
         const last = String(isLast).toLowerCase() === 'true' || String(isLast) === '1';
         if (last) {
             chunkSessions.delete(uploadId);
-            return res.json({ fileName: session.fileName, fileUrl: `/recordings/screen/${session.fileName}` });
+
+            try {
+                const mp4Info = await convertToMp4(session.filePath, screenDir);
+                return res.json({
+                    fileName: mp4Info.fileName,
+                    fileUrl: `/recordings/screen/${mp4Info.fileName}`,
+                });
+            } catch (err) {
+                console.error('Failed to convert chunked recording to mp4:', err);
+                return res.json({
+                    fileName: session.fileName,
+                    fileUrl: `/recordings/screen/${session.fileName}`,
+                    note: 'mp4 conversion failed; serving original file',
+                });
+            }
         }
 
         return res.json({ ok: true, uploadId, index: typeof index !== 'undefined' ? Number(index) : null });
