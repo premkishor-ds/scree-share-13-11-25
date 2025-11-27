@@ -18,6 +18,18 @@ function getPageUsername() {
 
 const PAGE_USERNAME = getPageUsername();
 
+const rtcConfig = {
+    iceServers: [
+        { urls: [
+            'stun:stun.l.google.com:19302',
+            'stun:stun1.l.google.com:19302',
+            'stun:stun2.l.google.com:19302',
+            'stun:stun3.l.google.com:19302',
+            'stun:stun4.l.google.com:19302',
+        ] },
+    ],
+};
+
 let pc = null;
 // camera overlay removed from view.html; we ignore camera tracks now
 let screenMedia = null;
@@ -44,7 +56,7 @@ socket.on('no-broadcaster', () => {
 });
 
 socket.on('offer', async (broadcasterId, description) => {
-    pc = new RTCPeerConnection();
+    pc = new RTCPeerConnection(rtcConfig);
 
     pc.ontrack = event => {
         const track = event.track;
