@@ -372,5 +372,43 @@ io.on('connection', socket => {
 });
 
 
+
+// Retention policy: Delete recordings older than 15 days
+const RETENTION_DAYS = 15;
+const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+function cleanupOldRecordings() {
+    console.log('Running cleanup of old recordings...');
+    fs.readdir(screenDir, (err, files) => {
+        if (err) {
+            console.error('Failed to read screen directory for cleanup:', err);
+            return;
+        }
+
+        const now = Date.now();
+        files.forEach(file => {
+            const filePath = path.join(screenDir, file);
+            fs.stat(filePath, (err, stats) => {
+                if (err) {
+                    console.error(`Failed to stat file ${file}:`, err);
+                    return;
+                }
+
+                if (now - stats.mtimeMs > RETENTION_MS) {
+                    fs.unlink(filePath, err => {
+                        if (err) console.error(`Failed to delete old recording ${file}:`, err);
+                        else console.log(`Deleted old recording: ${file}`);
+                    });
+                }
+            });
+        });
+    });
+}
+
+// Run cleanup periodically (e.g., every 24 hours)
+setInterval(cleanupOldRecordings, 24 * 60 * 60 * 1000);
+// Also run once on startup
+cleanupOldRecordings();
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
