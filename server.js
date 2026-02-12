@@ -157,15 +157,15 @@ app.get('/recordings/screen/:fileName', (req, res, next) => {
         const mp4Path = path.join(screenDir, mp4Name);
         const mp4Url = `/recordings/screen/${mp4Name}`;
 
-        let isDone = false;
+        let isProcessing = false;
         for (const job of conversionJobs.values()) {
-            if (job && job.mp4Url === mp4Url && job.status === 'done') {
-                isDone = true;
+            if (job && job.mp4Url === mp4Url && job.status === 'processing') {
+                isProcessing = true;
                 break;
             }
         }
 
-        if (isDone && fs.existsSync(mp4Path)) {
+        if (fs.existsSync(mp4Path) && !isProcessing) {
             return res.redirect(mp4Url);
         }
         return next();
