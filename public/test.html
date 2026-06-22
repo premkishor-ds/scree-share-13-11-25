@@ -374,21 +374,27 @@
 
             <div class="btn-row">
                 <button id="startBtn" class="btn btn-primary">
-                    Start Share & Broadcast
+                    Start Quiz & Share Screen
                 </button>
                 <button id="stopBtn" class="btn btn-danger" disabled>
-                    Stop Broadcast
+                    End Quiz & Stop Share
                 </button>
             </div>
 
-            <div style="border: 1px dashed var(--border-color); border-radius: 8px; padding: 1rem; display: flex; flex-direction: column; gap: 1rem;">
-                <h4 style="font-size: 0.95rem; font-weight: 600;">Question Recording Controls</h4>
+            <div id="recordingStatusPanel" style="border: 1px dashed var(--border-color); border-radius: 8px; padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; background-color: rgba(16, 185, 129, 0.02);">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h4 style="font-size: 0.95rem; font-weight: 600;">Active Quiz Recording</h4>
+                    <span id="recordingIndicator" style="display: none; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: var(--accent-success); font-weight: 600;">
+                        <span style="width: 8px; height: 8px; background-color: var(--accent-success); border-radius: 50%; display: inline-block; animation: pulse 1.5s infinite;"></span>
+                        RECORDING ACTIVE
+                    </span>
+                </div>
+                <div style="font-size: 0.95rem; display: flex; flex-direction: column; gap: 0.3rem;">
+                    <div><span style="color: var(--text-secondary);">Currently Recording:</span> <strong id="activeRecordingText" style="color: var(--accent-success);">None (Quiz not started)</strong></div>
+                </div>
                 <div class="btn-row">
-                    <button id="startRecBtn" class="btn btn-primary" style="background-color: var(--accent-success);" disabled>
-                        Record Question
-                    </button>
-                    <button id="stopRecBtn" class="btn btn-danger" disabled>
-                        Stop & Upload Q
+                    <button id="nextQuestionBtn" class="btn btn-primary" style="background-color: var(--accent-primary);" disabled>
+                        Next Question &rarr;
                     </button>
                 </div>
             </div>
@@ -458,8 +464,9 @@
         const customInputsGroup = document.getElementById('customInputsGroup');
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
-        const startRecBtn = document.getElementById('startRecBtn');
-        const stopRecBtn = document.getElementById('stopRecBtn');
+        const nextQuestionBtn = document.getElementById('nextQuestionBtn');
+        const recordingIndicator = document.getElementById('recordingIndicator');
+        const activeRecordingText = document.getElementById('activeRecordingText');
         const statusBadge = document.getElementById('statusBadge');
         const localVideo = document.getElementById('localVideo');
         const previewPlaceholder = document.getElementById('previewPlaceholder');
@@ -574,7 +581,7 @@
             consoleLog.innerHTML = '';
         });
 
-        // Start broadcasting
+        // Start broadcasting & Start Quiz
         startBtn.addEventListener('click', async () => {
             const username = usernameInput.value.trim();
             if (!username) {
@@ -601,7 +608,7 @@
                 isBroadcasting = true;
                 startBtn.disabled = true;
                 stopBtn.disabled = false;
-                startRecBtn.disabled = false;
+                nextQuestionBtn.disabled = false;
                 usernameInput.disabled = true;
                 quizIdInput.disabled = true;
                 quizSelect.disabled = true;
@@ -619,6 +626,10 @@
                 // Announce to server
                 log(`Announcing broadcast room for username: "${username}"`);
                 socket.emit('broadcaster', { username });
+
+                // Auto-start recording for the first question
+                const initialQuestionId = questionIdInput.value.trim() || 'q1';
+                startQuestionRecording(initialQuestionId);
 
                 // Listen for end of screen sharing from browser UI directly (e.g. Stop Sharing button)
                 videoTrack.onended = () => {
@@ -638,10 +649,20 @@
 
         function stopBroadcast() {
             if (!isBroadcasting) return;
-            log('Stopping broadcast...');
+            log('Ending quiz and stopping broadcast...');
 
             if (isRecordingQuestion) {
-                stopQuestionRecordingAndUpload();
+                const questionId = questionIdInput.value.trim();
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                    mediaRecorder.stop();
+                    log(`Finalizing and saving recording for last question: "${questionId}"...`);
+                    const chunksToUpload = [...recordedChunks];
+                    recordedChunks = [];
+                    setTimeout(() => {
+                        uploadRecordedVideo(questionId, chunksToUpload);
+                    }, 200);
+                }
+                isRecordingQuestion = false;
             }
             
             // Stop media stream tracks
@@ -665,8 +686,7 @@
             isBroadcasting = false;
             startBtn.disabled = false;
             stopBtn.disabled = true;
-            startRecBtn.disabled = true;
-            stopRecBtn.disabled = true;
+            nextQuestionBtn.disabled = true;
             usernameInput.disabled = false;
             quizIdInput.disabled = false;
             quizSelect.disabled = false;
@@ -674,7 +694,9 @@
             statusBadge.className = 'status-badge offline';
             statusBadge.textContent = 'Offline';
             testLinksCard.style.display = 'none';
-            log('Broadcast stopped.');
+            recordingIndicator.style.display = 'none';
+            activeRecordingText.textContent = 'None (Quiz not started)';
+            log('Quiz ended.');
         }
 
         // WebRTC Signaling Handlers
@@ -771,20 +793,42 @@
             }
         }
 
-        // Recording Controls for Questions
-        startRecBtn.addEventListener('click', () => {
-            const questionId = questionIdInput.value.trim();
-            if (!questionId) {
-                alert('Please specify a Question ID.');
-                return;
+        // Automatic transition logic
+        let isTransitioning = false;
+        async function transitionToQuestion(newQuestionId) {
+            if (isTransitioning || !isBroadcasting) return;
+            isTransitioning = true;
+            
+            const oldQuestionId = questionIdInput.value.trim();
+            log(`Auto-transitioning from question ${oldQuestionId} to ${newQuestionId}...`);
+            
+            if (isRecordingQuestion) {
+                // Stop previous recording
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                    mediaRecorder.stop();
+                    log(`Stopped recording for Question: "${oldQuestionId}". Saving in background...`);
+                    
+                    const chunksToUpload = [...recordedChunks];
+                    recordedChunks = [];
+                    setTimeout(() => {
+                        uploadRecordedVideo(oldQuestionId, chunksToUpload);
+                    }, 200);
+                }
+                isRecordingQuestion = false;
             }
-            startQuestionRecording(questionId);
-        });
 
-        stopRecBtn.addEventListener('click', () => {
-            stopQuestionRecordingAndUpload();
-        });
+            // Select the new question
+            questionSelect.value = newQuestionId;
+            questionIdInput.value = newQuestionId;
 
+            // Wait briefly for MediaRecorder cleanup, then start next recording
+            setTimeout(() => {
+                startQuestionRecording(newQuestionId);
+                isTransitioning = false;
+            }, 600);
+        }
+
+        // Recording System
         function startQuestionRecording(questionId) {
             recordedChunks = [];
             let options = { mimeType: 'video/webm;codecs=vp9,opus' };
@@ -805,37 +849,46 @@
                 mediaRecorder.start(1000); // chunk every 1 second
                 
                 isRecordingQuestion = true;
-                startRecBtn.disabled = true;
-                stopRecBtn.disabled = false;
                 questionIdInput.disabled = true;
                 
+                recordingIndicator.style.display = 'flex';
+                const selectedText = questionSelect.options[questionSelect.selectedIndex]?.text || questionId;
+                activeRecordingText.textContent = selectedText;
+
                 log(`Started recording for Question: "${questionId}". Options: ${options.mimeType}`);
             } catch (err) {
                 log(`Failed to start recording: ${err.message}`, 'error');
             }
         }
 
-        function stopQuestionRecordingAndUpload() {
-            if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
-            mediaRecorder.stop();
+        // Next Question Navigation Click
+        nextQuestionBtn.addEventListener('click', () => {
+            if (quizSelect.value === 'custom') {
+                alert('Transitions are automatic for predefined quiz questions. For custom mode, please change the Custom Question ID manually.');
+                return;
+            }
             
-            const questionId = questionIdInput.value.trim();
-            log(`Stopped recording for Question: "${questionId}". Initializing upload and transcoding...`);
-            
-            isRecordingQuestion = false;
-            startRecBtn.disabled = false;
-            stopRecBtn.disabled = true;
-            questionIdInput.disabled = false;
+            const currentIndex = questionSelect.selectedIndex;
+            if (currentIndex < questionSelect.options.length - 1) {
+                const nextOption = questionSelect.options[currentIndex + 1];
+                transitionToQuestion(nextOption.value);
+            } else {
+                alert('You have reached the last question of this quiz. Click "End Quiz & Stop Share" to complete the test.');
+            }
+        });
 
-            // Wait slightly for final chunks
-            setTimeout(() => {
-                uploadRecordedVideo(questionId);
-            }, 500);
-        }
+        // Intercept manual dropdown updates
+        questionSelect.addEventListener('change', () => {
+            if (quizSelect.value !== 'custom') {
+                transitionToQuestion(questionSelect.value);
+            } else {
+                questionIdInput.value = questionSelect.value;
+            }
+        });
 
         // Chunked upload to /api/recordings/screen/chunk
-        async function uploadRecordedVideo(questionId) {
-            const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        async function uploadRecordedVideo(questionId, chunksToUpload) {
+            const blob = new Blob(chunksToUpload, { type: 'video/webm' });
             if (blob.size === 0) {
                 log('No recording data captured.', 'warning');
                 return;
@@ -850,7 +903,6 @@
             uploadPercent.textContent = '0%';
             progressBar.style.width = '0%';
 
-            // Let's divide it into 1MB chunks
             const chunkSize = 1024 * 1024; 
             const totalChunks = Math.ceil(blob.size / chunkSize);
             log(`Uploading Q: "${questionId}" (${(blob.size / 1024 / 1024).toFixed(2)} MB) in ${totalChunks} chunks.`);
