@@ -36,7 +36,7 @@ function startConversionJob(jobId, inputPath, outputDir, webmUrl) {
     const parsed = path.parse(inputPath);
     const mp4Name = parsed.name + '.mp4';
     const mp4Path = path.join(outputDir, mp4Name);
-    const mp4Url = `/recordings/screen/${mp4Name}`;
+    const mp4Url = webmUrl.replace(/\.webm$/i, '.mp4');
 
     const job = {
         jobId,
@@ -123,18 +123,27 @@ function startConversionJob(jobId, inputPath, outputDir, webmUrl) {
 
 const conversionJobs = new Map();
 
-const commonFilename = (file, req) => {
-    const originalExtension = path.extname(file.originalname) || '.webm';
-    const safeExtension = originalExtension.slice(0, 10) || '.webm';
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const rawUsername = req && req.body && req.body.username ? String(req.body.username) : '';
-    const safeUsername = rawUsername.toLowerCase().replace(/[^a-z0-9-_]/g, '') || 'user';
-    return `recording-${safeUsername}-${timestamp}${safeExtension}`;
-};
-
 const screenStorage = multer.diskStorage({
-    destination: screenDir,
-    filename: (req, file, cb) => cb(null, commonFilename(file, req)),
+    destination: (req, file, cb) => {
+        const rawUsername = req.body && req.body.username ? String(req.body.username) : '';
+        const safeUsername = rawUsername.toLowerCase().replace(/[^a-z0-9-_]/g, '') || 'user';
+        const rawQuizId = req.body && req.body.quizId ? String(req.body.quizId) : '';
+        const safeQuizId = rawQuizId.toLowerCase().replace(/[^a-z0-9-_]/g, '') || 'default-quiz';
+        
+        const destDir = path.join(screenDir, safeUsername, safeQuizId);
+        if (!fs.existsSync(destDir)) {
+            fs.mkdirSync(destDir, { recursive: true });
+        }
+        cb(null, destDir);
+    },
+    filename: (req, file, cb) => {
+        const originalExtension = path.extname(file.originalname) || '.webm';
+        const safeExtension = originalExtension.slice(0, 10) || '.webm';
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const rawQuestionId = req.body && req.body.questionId ? String(req.body.questionId) : '';
+        const safeQuestionId = rawQuestionId.toLowerCase().replace(/[^a-z0-9-_]/g, '') || 'q-unknown';
+        cb(null, `question-${safeQuestionId}-${timestamp}${safeExtension}`);
+    },
 });
 
 const uploadScreen = multer({ storage: screenStorage });
@@ -148,14 +157,15 @@ app.use(express.static('public'));
 app.get('/view/:username.html', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'view.html'));
 });
-app.get('/recordings/screen/:fileName', (req, res, next) => {
-    try {
-        const fileName = String(req.params.fileName || '');
-        if (!fileName.toLowerCase().endsWith('.webm')) return next();
 
-        const mp4Name = fileName.replace(/\.webm$/i, '.mp4');
-        const mp4Path = path.join(screenDir, mp4Name);
-        const mp4Url = `/recordings/screen/${mp4Name}`;
+app.get('/recordings/screen/*', (req, res, next) => {
+    try {
+        const relativePath = req.params[0];
+        if (!relativePath || !relativePath.toLowerCase().endsWith('.webm')) return next();
+
+        const mp4RelativePath = relativePath.replace(/\.webm$/i, '.mp4');
+        const mp4Path = path.join(screenDir, mp4RelativePath);
+        const mp4Url = `/recordings/screen/${mp4RelativePath}`;
 
         let isProcessing = false;
         for (const job of conversionJobs.values()) {
@@ -199,11 +209,12 @@ app.post('/api/recordings/screen', uploadScreen.single('recording'), (req, res) 
     try {
         if (!req.file) return res.status(400).json({ error: 'No recording file received' });
 
-        const storedPath = req.file.path || path.join(screenDir, req.file.filename);
-        const webmUrl = `/recordings/screen/${req.file.filename}`;
+        const storedPath = req.file.path;
+        const relativePath = path.relative(screenDir, storedPath);
+        const webmUrl = `/recordings/screen/${relativePath.replace(/\\/g, '/')}`;
         const jobId = createJobId();
 
-        startConversionJob(jobId, storedPath, screenDir, webmUrl);
+        startConversionJob(jobId, storedPath, path.dirname(storedPath), webmUrl);
 
         return res.json({
             jobId,
@@ -231,13 +242,23 @@ app.post('/api/recordings/screen/chunk', uploadScreenChunk.single('recording'), 
         if (!session) {
             const rawUsername = req.body && req.body.username ? String(req.body.username) : '';
             const safeUsername = rawUsername.toLowerCase().replace(/[^a-z0-9-_]/g, '') || 'user';
+            const rawQuizId = req.body && req.body.quizId ? String(req.body.quizId) : '';
+            const safeQuizId = rawQuizId.toLowerCase().replace(/[^a-z0-9-_]/g, '') || 'default-quiz';
+            const rawQuestionId = req.body && req.body.questionId ? String(req.body.questionId) : '';
+            const safeQuestionId = rawQuestionId.toLowerCase().replace(/[^a-z0-9-_]/g, '') || 'q-unknown';
 
             const extension = path.extname(req.file.originalname) || '.webm';
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const baseName = `recording-${safeUsername}-${timestamp}${extension}`;
-            const filePath = path.join(screenDir, baseName);
+            
+            const destDir = path.join(screenDir, safeUsername, safeQuizId);
+            if (!fs.existsSync(destDir)) {
+                fs.mkdirSync(destDir, { recursive: true });
+            }
+
+            const baseName = `question-${safeQuestionId}-${timestamp}${extension}`;
+            const filePath = path.join(destDir, baseName);
             fs.writeFileSync(filePath, req.file.buffer);
-            session = { filePath, fileName: baseName };
+            session = { filePath, fileName: baseName, relativeUrlPath: `${safeUsername}/${safeQuizId}/${baseName}` };
             chunkSessions.set(uploadId, session);
         } else {
             fs.appendFileSync(session.filePath, req.file.buffer);
@@ -247,10 +268,10 @@ app.post('/api/recordings/screen/chunk', uploadScreenChunk.single('recording'), 
         if (last) {
             chunkSessions.delete(uploadId);
 
-            const webmUrl = `/recordings/screen/${session.fileName}`;
+            const webmUrl = `/recordings/screen/${session.relativeUrlPath}`;
             const jobId = createJobId();
 
-            startConversionJob(jobId, session.filePath, screenDir, webmUrl);
+            startConversionJob(jobId, session.filePath, path.dirname(session.filePath), webmUrl);
 
             return res.json({
                 jobId,
