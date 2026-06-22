@@ -77,7 +77,7 @@ function startConversionJob(jobId, inputPath, outputDir, webmUrl) {
             mp4Path,
         ];
 
-        const ff = spawn('ffmpeg', args);
+        const ff = spawn('ffmpeg', args, { shell: true });
 
         ff.on('error', (err) => {
             console.error('ffmpeg spawn error:', err);
