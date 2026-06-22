@@ -9,6 +9,13 @@ const { exec, spawn } = require('child_process');
 const crypto = require('crypto');
 const { Server } = require('socket.io');
 
+process.on('uncaughtException', (err) => {
+    console.error('UNCAUGHT EXCEPTION:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('UNHANDLED REJECTION:', reason);
+});
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -71,6 +78,15 @@ function startConversionJob(jobId, inputPath, outputDir, webmUrl) {
         ];
 
         const ff = spawn('ffmpeg', args);
+
+        ff.on('error', (err) => {
+            console.error('ffmpeg spawn error:', err);
+            const current = conversionJobs.get(jobId);
+            if (current) {
+                current.status = 'failed';
+                current.error = `Failed to spawn ffmpeg: ${err.message}`;
+            }
+        });
 
         ff.stdout.on('data', (data) => {
             try {

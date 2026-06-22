@@ -656,11 +656,6 @@
                 if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                     mediaRecorder.stop();
                     log(`Finalizing and saving recording for last question: "${questionId}"...`);
-                    const chunksToUpload = [...recordedChunks];
-                    recordedChunks = [];
-                    setTimeout(() => {
-                        uploadRecordedVideo(questionId, chunksToUpload);
-                    }, 200);
                 }
                 isRecordingQuestion = false;
             }
@@ -807,12 +802,6 @@
                 if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                     mediaRecorder.stop();
                     log(`Stopped recording for Question: "${oldQuestionId}". Saving in background...`);
-                    
-                    const chunksToUpload = [...recordedChunks];
-                    recordedChunks = [];
-                    setTimeout(() => {
-                        uploadRecordedVideo(oldQuestionId, chunksToUpload);
-                    }, 200);
                 }
                 isRecordingQuestion = false;
             }
@@ -831,12 +820,28 @@
         // Recording System
         function startQuestionRecording(questionId) {
             recordedChunks = [];
-            let options = { mimeType: 'video/webm;codecs=vp9,opus' };
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options = { mimeType: 'video/webm;codecs=vp8,opus' };
-            }
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options = { mimeType: 'video/webm' };
+            
+            // Dynamically check if the localStream has audio tracks.
+            // If it does not, requesting an audio codec (like opus) will make MediaRecorder capture 0 bytes or fail entirely on some browsers.
+            const hasAudio = localStream && localStream.getAudioTracks().length > 0;
+            let options = {};
+            
+            if (hasAudio) {
+                if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')) {
+                    options = { mimeType: 'video/webm;codecs=vp9,opus' };
+                } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) {
+                    options = { mimeType: 'video/webm;codecs=vp8,opus' };
+                } else {
+                    options = { mimeType: 'video/webm' };
+                }
+            } else {
+                if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+                    options = { mimeType: 'video/webm;codecs=vp9' };
+                } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
+                    options = { mimeType: 'video/webm;codecs=vp8' };
+                } else {
+                    options = { mimeType: 'video/webm' };
+                }
             }
 
             try {
@@ -846,6 +851,18 @@
                         recordedChunks.push(e.data);
                     }
                 };
+                
+                mediaRecorder.onstop = () => {
+                    const chunksToUpload = [...recordedChunks];
+                    recordedChunks = [];
+                    log(`MediaRecorder stopped for Question: "${questionId}". Chunks count: ${chunksToUpload.length}`);
+                    uploadRecordedVideo(questionId, chunksToUpload);
+                };
+
+                mediaRecorder.onerror = e => {
+                    log(`MediaRecorder error: ${e.error ? e.error.message : e.message || 'unknown error'}`, 'error');
+                };
+
                 mediaRecorder.start(1000); // chunk every 1 second
                 
                 isRecordingQuestion = true;
