@@ -1,6 +1,0 @@
-{
-  "ignore": [
-    "recordings/*",
-    "node_modules/*"
-  ]
-}

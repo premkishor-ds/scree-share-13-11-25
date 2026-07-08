@@ -26,6 +26,3 @@ build/
 # IDE specific
 .vscode/
 .idea/
-
-# Local recordings
-recordings/
